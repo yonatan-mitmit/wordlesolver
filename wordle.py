@@ -1,6 +1,7 @@
 import collections
 import unittest
 import argparse
+from math import log
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 from collections import namedtuple
@@ -66,19 +67,19 @@ def word_score(word, hist, mask = '*****', incorrect = set()):
         letter = word[i]
         letter_score = hist[(i,letter)]
         if letter in incorrect: return 0;
-        elif mask[i] == Wildcard: score += letter_score
+        elif mask[i] == Wildcard: score += log(letter_score)
         elif type(mask[i]) is Match:
-            if mask[i].letter == letter: score += letter_score
+            if mask[i].letter == letter: score += log(letter_score)
             else: return 0; 
         elif type(mask[i]) == Mismatch:
             if mask[i].letter == letter: return 0; 
             if not mask[i].letter in wordSet: return 0;
-            score += letter_score
+            score += log(letter_score)
         elif type(mask[i]) == Range:
             for let in mask[i].letters:
                 if let == letter: return 0; 
                 if not let in wordSet: return 0;
-            score += letter_score
+            score += log(letter_score)
     return score
 
 
@@ -125,7 +126,7 @@ class TestWordScore(unittest.TestCase):
     def testEmpty(self):
         words = ["hello", "ghost", "trial"]
         for word in words:
-            expected = sum([self.hist[(i,c)] for (i,c) in enumerate(word)])
+            expected = sum([log(self.hist[(i,c)]) for (i,c) in enumerate(word)])
             self.assertEqual(word_score(word, self.hist), expected)
 
     def testWithIncorrect(self):
