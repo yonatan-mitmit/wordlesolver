@@ -1,6 +1,21 @@
+"""
+Both entropy and dict mode work now (not together, still need refactor)
+I don't like the letter entropy mode vs the word entropy mode and ignoring location function
+
+Intuition - we get similar information from multiple letters which wastes progress
+Solution - Take all letters into account when computing the new information a word gives
+
+Divide the world into things that overlap 5,4,3,2,1 letters
+
+Compute size of each group
+Pick word that maximizes entropy over this group
+
+
+"""
 import collections
 import unittest
 import argparse
+import string
 from math import log
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
@@ -60,7 +75,7 @@ def parse_mask(word):
     return GlobalWV.visit(tree)
 
 
-def word_score(word, hist, mask = '*****', incorrect = set()):
+def word_score(word, hist, mask = [Wildcard] * 5, incorrect = set()):
     wordSet = set(word)
     score = 0
     for i in range(len(word)):
@@ -84,7 +99,7 @@ def word_score(word, hist, mask = '*****', incorrect = set()):
 
 
 
-def best_matches(wordfile, hist, count, mask = '*****', incorrect = set(), unique = False):
+def best_matches(wordfile, hist, count, mask = [Wildcard] * 5, incorrect = set(), unique = False):
     ret = []
     with open(wordfile,'r') as wf:
         for line in wf.readlines():
@@ -95,6 +110,74 @@ def best_matches(wordfile, hist, count, mask = '*****', incorrect = set(), uniqu
                 ret.sort(key = lambda x: x[1], reverse = True)
                 ret = ret[:count]
     return ret
+
+class WordleEntropy:
+
+    @staticmethod
+    def word_matches(word, mask, incorrect):
+        wordSet = set(word)
+        for i in range(len(word)):
+            letter = word[i]
+            if letter in incorrect: return False
+            elif mask[i] == Wildcard: continue
+            elif type(mask[i]) is Match:
+                if mask[i].letter == letter: continue
+                else: return False; 
+            elif type(mask[i]) == Mismatch:
+                if mask[i].letter == letter: return False; 
+                if not mask[i].letter in wordSet: return False;
+                continue
+            elif type(mask[i]) == Range:
+                for let in mask[i].letters:
+                    if let == letter: return False; 
+                    if not let in wordSet: return False;
+                continue
+        return True
+
+    def letter_score(self, letter):
+        pair = self.map[letter]
+        (lw, lwo) = [len(x) for x in pair]
+        total = lw + lwo
+        if total == 0:
+            raise Exception("letter_score partitioned an empty set. Verify `mask` and `incorrect` are consistent")
+        p = lw / total
+        ent = -(p * log(p + 1e-30) + (1-p) * log(1-p + 1e-30))
+        return ent
+
+    def __init__(self, words_set, hard_mode, mask, incorrect):
+        lowercase = set(string.ascii_lowercase)
+        self.map = {x : (set(), set()) for x in string.ascii_lowercase}
+        self.words = set()
+        self.hard_mode = hard_mode
+        self.mask = mask
+        self.incorrect = incorrect
+        for word in words:
+            mat = self.word_matches(word, mask, incorrect)
+            if mat:
+                for letter in word:
+                    self.map[letter][0].add(word)
+                for letter in (lowercase - set(word)):
+                    self.map[letter][1].add(word)
+            if mat or not self.hard_mode:
+                self.words.add(word)
+
+        self.letter_ent = {x : self.letter_score(x) for x in string.ascii_lowercase}
+
+
+    def word_score(self, word):
+        # This is still weak... word entropy isn't the sum
+        return sum(self.letter_ent[x] for x in set(word))
+
+    def best_matches(self, count, unique = False):
+        ret = []
+        for word in self.words:
+            if unique and len(set(word)) != 5: continue 
+            #if not self.word_matches(word): continue
+            if self.word_matches(word, self.mask, self.incorrect):
+                ret.append([word, self.word_score(word)])
+                ret.sort(key = lambda x: x[1], reverse = True)
+                ret = ret[:count]
+        return ret
 
 
 if __name__ == "__main__":
@@ -109,14 +192,30 @@ if __name__ == "__main__":
                         help='number of results')
     parser.add_argument('--wordfile', dest='wordfile', default='./wordlelist.txt',
                         help='word file to use')
+    parser.add_argument('--no_hard_mode', dest='hard_mode', action='store_false', default=True,
+                        help='use hard mode')
 
     args = parser.parse_args()
     mask = parse_mask(args.mask)
-    print ("mask {}, incorrect {}, unique {}".format(mask, args.incorrect, args.unique))
-    hist = build_hist(wordfile)
-    for w, s in (x for x in best_matches(wordfile=args.wordfile, hist = hist, count = args.count, mask = mask, incorrect = set(args.incorrect), unique = args.unique) if x[1] > 0):
-        print("{} => {}".format(w, s))
+    #print ("mask {}, incorrect {}, unique {}".format(mask, args.incorrect, args.unique))
+    #hist = build_hist(wordfile)
+    #for w, s in (x for x in best_matches(wordfile=args.wordfile, hist = hist, count = args.count, mask = mask, incorrect = set(args.incorrect), unique = args.unique) if x[1] > 0):
+    #    print("{} => {}".format(w, s))
+    words = set()
+    with open(args.wordfile,'r') as wf:
+        for line in wf.readlines():
+            line = line.strip()
+            words.add(line)
 
+    we = WordleEntropy(words, args.hard_mode, mask, set(args.incorrect))
+    res = we.best_matches(args.count, unique = args.unique)
+
+    if any(x[1] > 0 for x in res):
+        for w, s in (x for x in res if x[1] > 0):
+            print("{} => {}".format(w, s))
+    else:
+        for w, s in (x for x in res):
+            print("{} => {}".format(w, s))
 
 #TESTS
 class TestWordScore(unittest.TestCase):
