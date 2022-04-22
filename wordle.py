@@ -5,11 +5,10 @@ I don't like the letter entropy mode vs the word entropy mode and ignoring locat
 Intuition - we get similar information from multiple letters which wastes progress
 Solution - Take all letters into account when computing the new information a word gives
 
-Divide the world into things that overlap 5,4,3,2,1 letters
 
-Compute size of each group
-Pick word that maximizes entropy over this group
-
+Init stage - take each pair of words
+Compute overlap index (mask of letters that appear in both) (alert, trace) => 10111
+tuple(map(lambda x: x[0] in x[1], zip(alert, trace)))
 
 """
 import collections
@@ -19,7 +18,9 @@ import string
 from math import log
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
-from collections import namedtuple
+from collections import namedtuple, defaultdict
+import itertools
+
 
 wordfile = "wordlist.txt"
 
@@ -111,7 +112,7 @@ def best_matches(wordfile, hist, count, mask = [Wildcard] * 5, incorrect = set()
                 ret = ret[:count]
     return ret
 
-class WordleEntropy:
+class WordleLetterEntropy:
 
     @staticmethod
     def word_matches(word, mask, incorrect):
@@ -151,7 +152,7 @@ class WordleEntropy:
         self.hard_mode = hard_mode
         self.mask = mask
         self.incorrect = incorrect
-        for word in words:
+        for word in self.words_set:
             mat = self.word_matches(word, mask, incorrect)
             if mat:
                 for letter in word:
@@ -179,6 +180,88 @@ class WordleEntropy:
                 ret = ret[:count]
         return ret
 
+class WordleWordEntropy:
+
+    @staticmethod
+    def word_matches(word, mask, incorrect):
+        wordSet = set(word)
+        for i in range(len(word)):
+            letter = word[i]
+            if letter in incorrect: return False
+            elif mask[i] == Wildcard: continue
+            elif type(mask[i]) is Match:
+                if mask[i].letter == letter: continue
+                else: return False; 
+            elif type(mask[i]) == Mismatch:
+                if mask[i].letter == letter: return False; 
+                if not mask[i].letter in wordSet: return False;
+                continue
+            elif type(mask[i]) == Range:
+                for let in mask[i].letters:
+                    if let == letter: return False; 
+                    if not let in wordSet: return False;
+                continue
+        return True
+
+    def build_match_matrix(self, word_set):
+        ret = {}
+        for word_1 in word_set:
+            for word_2 in word_set:
+                ret[(word_1, word_2)] = tuple(map(lambda l: int(l in word_2), word_1)) +  \
+                tuple(map(lambda l: int(l[0] == l[1]), zip(word_1, word_2)))
+        return ret
+
+    def __init__(self, words_set, hard_mode, mask, incorrect):
+        lowercase = set(string.ascii_lowercase)
+        self.remaining = set()
+        self.hard_mode = hard_mode
+        self.mask = mask
+        self.incorrect = incorrect
+        for word in words_set:
+            mat = self.word_matches(word, mask, incorrect)
+            if mat: 
+                self.remaining.add(word)
+
+        if self.hard_mode:
+            self.all_words = self.remaining
+        else:
+            self.all_words = words_set
+
+        self.word_matrix = self.build_match_matrix(self.all_words)
+
+    def word_score_int(self, word):
+        groups = defaultdict(int)
+        for w in self.remaining:
+            key = self.word_matrix[(word, w)]
+            groups[key]+=1
+        total = len(self.remaining)
+        ent = 0
+        for s in groups.values():
+            p = s / total
+            ent += p * log(p + 1e-50)
+        return -ent, groups
+
+    def word_score(self, word):
+        return self.word_score_int(word)[0]
+
+    def debug_ent(self, word):
+        ent, gr = self.word_score_int(word)
+        print(word)
+        for k,s in gr.items():
+            print("{} => {}".format(k, s)) 
+
+    def best_matches(self, count, unique = False):
+        ret = []
+        for word in self.all_words:
+            if unique and len(set(word)) != 5: continue 
+            #if not self.word_matches(word): continue
+            ret.append([word, self.word_score(word)])
+            ret.sort(key = lambda x: (x[1], x[0]), reverse = True)
+            ret = ret[:count]
+            #for w in ret:
+            #    self.debug_ent(w[0])
+
+        return ret
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Best wordle match.')
@@ -207,7 +290,8 @@ if __name__ == "__main__":
             line = line.strip()
             words.add(line)
 
-    we = WordleEntropy(words, args.hard_mode, mask, set(args.incorrect))
+    #we = WordleLetterEntropy(words, args.hard_mode, mask, set(args.incorrect))
+    we = WordleWordEntropy(words, args.hard_mode, mask, set(args.incorrect))
     res = we.best_matches(args.count, unique = args.unique)
 
     if any(x[1] > 0 for x in res):
