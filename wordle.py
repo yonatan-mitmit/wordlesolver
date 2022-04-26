@@ -1,5 +1,6 @@
 """
-Remove letter model
+Unify into one base class and derivatives
+Fix unittests to focus on parsers and not solution
 
 """
 import collections
@@ -20,13 +21,6 @@ import functools
 
 wordfile = "wordlist.txt"
 
-def build_hist(wordfile):
-    ctr = collections.Counter()
-    with open(wordfile,'r') as wf:
-        for line in wf.readlines():
-            line = line.strip()
-            if len(line) == 5: ctr.update(enumerate(line))
-    return ctr
 
 word_grammer = Grammar("""
     word = atom*
@@ -72,43 +66,25 @@ def parse_mask(word):
     return GlobalWV.visit(tree)
 
 
-def word_score(word, hist, mask = [Wildcard] * 5, incorrect = set()):
-    wordSet = set(word)
-    score = 0
-    for i in range(len(word)):
-        letter = word[i]
-        letter_score = hist[(i,letter)]
-        if letter in incorrect: return 0;
-        elif mask[i] == Wildcard: score += log(letter_score)
-        elif type(mask[i]) is Match:
-            if mask[i].letter == letter: score += log(letter_score)
-            else: return 0; 
-        elif type(mask[i]) == Mismatch:
-            if mask[i].letter == letter: return 0; 
-            if not mask[i].letter in wordSet: return 0;
-            score += log(letter_score)
-        elif type(mask[i]) == Range:
-            for let in mask[i].letters:
-                if let == letter: return 0; 
-                if not let in wordSet: return 0;
-            score += log(letter_score)
-    return score
 
+class BaseWordleSolver:
+    def __init__(self, words_set, hard_mode, mask, incorrect):
+        self.hard_mode = hard_mode
+        self.mask = mask
+        self.incorrect = incorrect
+        self.all_words = list(enumerate(words_set))
+        self.remaining = set()
 
+        for idx, word in self.all_words:
+            mat = self.word_matches(word, mask, incorrect)
+            if mat: 
+                self.remaining.add((idx, word))
 
-def best_matches(wordfile, hist, count, mask = [Wildcard] * 5, incorrect = set(), unique = False):
-    ret = []
-    with open(wordfile,'r') as wf:
-        for line in wf.readlines():
-            line = line.strip()
-            if len(line) == 5:
-                if unique and len(set(line)) != 5: continue 
-                ret.append([line, word_score(line, hist, mask, incorrect)])
-                ret.sort(key = lambda x: x[1], reverse = True)
-                ret = ret[:count]
-    return ret
-
-class WordleLetterEntropy:
+        if self.hard_mode:
+            self.candidates = self.remaining
+        else:
+            self.candidates = self.all_words 
+    
 
     @staticmethod
     def word_matches(word, mask, incorrect):
@@ -130,6 +106,41 @@ class WordleLetterEntropy:
                     if not let in wordSet: return False;
                 continue
         return True
+
+
+    def word_score(self, word_idx, word):
+        raise NotImplemented("Base Model")
+
+    def best_matches(self, count, unique = False):
+        ret = []
+        for idx, word in self.candidates:
+            if unique and len(set(word)) != 5: continue 
+            #if not self.word_matches(word): continue
+            ret.append([word, self.word_score(idx, word)])
+            ret.sort(key = lambda x: (x[1], x[0]), reverse = True)
+            ret = ret[:count]
+            #for w in ret:
+            #    self.debug_ent(w[0])
+
+        return ret
+
+
+class HighestProbability(BaseWordleSolver):
+    def __init__(self, words_set, hard_mode, mask, incorrect):
+        super().__init__(words_set, hard_mode, mask, incorrect)
+        self.hist = self.build_hist()
+
+    def build_hist(self):
+        ctr = collections.Counter()
+        for _, word in self.all_words:
+            ctr.update(enumerate(word))
+        return ctr
+
+    def word_score(self, word_idx, word):
+        return sum(map(lambda i: log(self.hist[(i[0],i[1])]), enumerate(word)))
+
+
+class LetterEntropy(BaseWordleSolver):
 
     def letter_score(self, letter):
         pair = self.map[letter]
@@ -142,39 +153,23 @@ class WordleLetterEntropy:
         return ent
 
     def __init__(self, words_set, hard_mode, mask, incorrect):
+        super().__init__(words_set, hard_mode, mask, incorrect)
         lowercase = set(string.ascii_lowercase)
         self.map = {x : (set(), set()) for x in string.ascii_lowercase}
-        self.words = set()
-        self.hard_mode = hard_mode
-        self.mask = mask
-        self.incorrect = incorrect
-        for word in self.words_set:
+        
+        for idx, word in self.all_words:
             mat = self.word_matches(word, mask, incorrect)
             if mat:
                 for letter in word:
                     self.map[letter][0].add(word)
                 for letter in (lowercase - set(word)):
                     self.map[letter][1].add(word)
-            if mat or not self.hard_mode:
-                self.words.add(word)
 
         self.letter_ent = {x : self.letter_score(x) for x in string.ascii_lowercase}
 
 
-    def word_score(self, word):
-        # This is still weak... word entropy isn't the sum
+    def word_score(self, word_idx, word):
         return sum(self.letter_ent[x] for x in set(word))
-
-    def best_matches(self, count, unique = False):
-        ret = []
-        for word in self.words:
-            if unique and len(set(word)) != 5: continue 
-            #if not self.word_matches(word): continue
-            if self.word_matches(word, self.mask, self.incorrect):
-                ret.append([word, self.word_score(word)])
-                ret.sort(key = lambda x: x[1], reverse = True)
-                ret = ret[:count]
-        return ret
 
 
 class CachePolicy(enum.Enum):
@@ -187,28 +182,13 @@ class CachePolicy(enum.Enum):
         return self.value
 
 
-class WordleWordEntropy:
+class WordEntropy(BaseWordleSolver):
 
-    @staticmethod
-    def word_matches(word, mask, incorrect):
-        wordSet = set(word)
-        for i in range(len(word)):
-            letter = word[i]
-            if letter in incorrect: return False
-            elif mask[i] == Wildcard: continue
-            elif type(mask[i]) is Match:
-                if mask[i].letter == letter: continue
-                else: return False; 
-            elif type(mask[i]) == Mismatch:
-                if mask[i].letter == letter: return False; 
-                if not mask[i].letter in wordSet: return False;
-                continue
-            elif type(mask[i]) == Range:
-                for let in mask[i].letters:
-                    if let == letter: return False; 
-                    if not let in wordSet: return False;
-                continue
-        return True
+    def __init__(self, words_set, hard_mode, mask, incorrect, cache_policy = CachePolicy.IGNORE):
+        super().__init__(words_set, hard_mode, mask, incorrect)
+        self.cache_prefix = 'entmat'
+        self.word_matrix = WordEntropy.get_entropy_matrix(cache_policy, self.cache_prefix, words_set)
+
 
     @staticmethod
     def load_match_matrix(prefix, word_set, letters = 8):
@@ -250,41 +230,21 @@ class WordleWordEntropy:
                 ret[i1,i2] = functools.reduce(acc, tup, 0)
         return ret
 
-    def __init__(self, words_set, hard_mode, mask, incorrect, cache_handle = CachePolicy.IGNORE):
-        lowercase = set(string.ascii_lowercase)
-        self.remaining = set()
-        self.hard_mode = hard_mode
-        self.mask = mask
-        self.incorrect = incorrect
-        self.cache_prefix = 'entmat'
-
-        self.word_matrix = WordleWordEntropy.get_entropy_matrix(cache_handle, self.cache_prefix, words_set)
-
-        for idx, word in enumerate(words_set):
-            mat = self.word_matches(word, mask, incorrect)
-            if mat: 
-                self.remaining.add((idx, word))
-
-        if self.hard_mode:
-            self.all_words = self.remaining
-        else:
-            self.all_words = list(enumerate(words_set))
-
 
     @staticmethod
-    def get_entropy_matrix(cache_handle, prefix, all_words, letters = 8):
+    def get_entropy_matrix(cache_policy, prefix, all_words, letters = 8):
         matrix = None
         loaded = False
 
-        if cache_handle in [CachePolicy.LOAD, CachePolicy.LOAD_AND_SAVE]:
-            matrix = WordleWordEntropy.load_match_matrix(prefix, all_words, letters)
+        if cache_policy in [CachePolicy.LOAD, CachePolicy.LOAD_AND_SAVE]:
+            matrix = WordEntropy.load_match_matrix(prefix, all_words, letters)
             if matrix is not None: loaded = True
 
         if matrix is None:
-            matrix = WordleWordEntropy.build_match_matrix(all_words)
+            matrix = WordEntropy.build_match_matrix(all_words)
 
-        if cache_handle == CachePolicy.SAVE or (cache_handle == CachePolicy.LOAD_AND_SAVE and loaded == False):
-            WordleWordEntropy.save_match_matrix(prefix, all_words, matrix, letters)
+        if cache_policy == CachePolicy.SAVE or (cache_policy == CachePolicy.LOAD_AND_SAVE and loaded == False):
+            WordEntropy.save_match_matrix(prefix, all_words, matrix, letters)
 
         return matrix
 
@@ -309,21 +269,22 @@ class WordleWordEntropy:
         for k,s in gr.items():
             print("{} => {}".format(k, s)) 
 
-    def best_matches(self, count, unique = False):
-        ret = []
-        for idx, word in self.all_words:
-            if unique and len(set(word)) != 5: continue 
-            #if not self.word_matches(word): continue
-            ret.append([word, self.word_score(idx, word)])
-            ret.sort(key = lambda x: (x[1], x[0]), reverse = True)
-            ret = ret[:count]
-            #for w in ret:
-            #    self.debug_ent(w[0])
+def find_solvers():
+    return dict(map(lambda x: (x.__name__ , x), BaseWordleSolver.__subclasses__()))
 
-        return ret
+def relevantArgs(func, args, kwargs, ignore=['self']):
+    import inspect
+    spec = inspect.getfullargspec(func)
+    func_args = list(filter(lambda x: x not in ignore, spec.args))
+    unbound = func_args[len(args):]
+    return { x: kwargs[x] for x in unbound if x in kwargs}
 
 if __name__ == "__main__":
+    solvers = find_solvers()
+
     parser = argparse.ArgumentParser(description='Best wordle match.')
+    parser.add_argument('--solver', type=str, dest='solver', default='WordEntropy', choices=list(solvers.keys()),
+                        help="Solver to use")
     parser.add_argument('--mask', type=str, dest='mask', default="*****",
                         help="what's already known. Use * for unknown, Uppercase for match, and lowercase when location unknown")
     parser.add_argument('--incorrect', dest='incorrect', default = "",
@@ -336,11 +297,13 @@ if __name__ == "__main__":
                         help='word file to use')
     parser.add_argument('--no_hard_mode', dest='hard_mode', action='store_false', default=True,
                         help='use hard mode')
-    parser.add_argument('--cache_policy', dest='cache', default=CachePolicy.LOAD_AND_SAVE, type=CachePolicy, choices=list(CachePolicy),
+    parser.add_argument('--cache_policy', dest='cache_policy', default=CachePolicy.LOAD_AND_SAVE, type=CachePolicy, choices=list(CachePolicy),
                         help='Cache handling policy')
+
 
     args = parser.parse_args()
     mask = parse_mask(args.mask)
+    solver = solvers[args.solver]
     #print ("mask {}, incorrect {}, unique {}".format(mask, args.incorrect, args.unique))
     #hist = build_hist(wordfile)
     #for w, s in (x for x in best_matches(wordfile=args.wordfile, hist = hist, count = args.count, mask = mask, incorrect = set(args.incorrect), unique = args.unique) if x[1] > 0):
@@ -349,10 +312,12 @@ if __name__ == "__main__":
     with open(args.wordfile,'r') as wf:
         for line in wf.readlines():
             line = line.strip()
-            words.add(line)
+            if(len(line)==5): words.add(line)
 
-    #we = WordleLetterEntropy(words, args.hard_mode, mask, set(args.incorrect))
-    we = WordleWordEntropy(words, args.hard_mode, mask, set(args.incorrect), cache_handle = args.cache)
+    solver_args = (words, args.hard_mode, mask, set(args.incorrect)) 
+    extraArgs = relevantArgs(solver, solver_args, vars(args))
+    we = solver(*solver_args, **extraArgs)
+    #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
     res = we.best_matches(args.count, unique = args.unique)
 
     if any(x[1] > 0 for x in res):
