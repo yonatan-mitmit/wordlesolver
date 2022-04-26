@@ -1,17 +1,5 @@
 """
-Both entropy and dict mode work now (not together, still need refactor)
-I don't like the letter entropy mode vs the word entropy mode and ignoring location function
-
-Intuition - we get similar information from multiple letters which wastes progress
-Solution - Take all letters into account when computing the new information a word gives
-
-
-Init stage - take each pair of words
-Compute overlap index (mask of letters that appear in both) (alert, trace) => 10111
-
-1. Change matrix to numpy
-2. Word bound to location in big list (so we always need to keep the original index) 
-3. Add load_and_save as default option to save if load fails
+Remove letter model
 
 """
 import collections
@@ -27,6 +15,7 @@ from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 from collections import namedtuple, defaultdict
 import numpy as np
+import functools
 
 
 wordfile = "wordlist.txt"
@@ -192,6 +181,7 @@ class CachePolicy(enum.Enum):
     IGNORE = 'ignore'
     SAVE = 'save'
     LOAD = 'load'
+    LOAD_AND_SAVE = 'load_and_save'
 
     def __str__(self):
         return self.value
@@ -227,10 +217,9 @@ class WordleWordEntropy:
             hs.update(word.encode('utf-8'))
         digest = hs.hexdigest()[:letters]
         try:
-            fn = "{}-{}.pkl".format(prefix, digest)
+            fn = "{}-{}.npy".format(prefix, digest)
             print("Loading entropy matrix from {}".format(fn));
-            with open(fn,'rb') as e:
-                    return pickle.load(e)
+            return np.load(fn)
         except FileNotFoundError as e:
             print("No match matrix found")
             return None
@@ -241,18 +230,24 @@ class WordleWordEntropy:
         for word in words:
             hs.update(word.encode('utf-8'))
         digest = hs.hexdigest()[:letters]
-        fn = "{}-{}.pkl".format(prefix, digest)
+        fn = "{}-{}.npy".format(prefix, digest)
         print("Saving entropy matrix to {}".format(fn));
-        with open(fn,'wb') as e:
-            return pickle.dump(matrix, e)
+        np.save(fn, matrix)
 
     @staticmethod
     def build_match_matrix(word_set):
-        ret = {}
-        for word_1 in word_set:
-            for word_2 in word_set:
-                ret[(word_1, word_2)] = tuple(map(lambda l: int(l in word_2), word_1)) +  \
-                tuple(map(lambda l: int(l[0] == l[1]), zip(word_1, word_2)))
+        acc = lambda x,y: x*3 + y
+        def let(idx, letter, word_2):
+            if letter == word_2[idx]: return 2;
+            if letter in word_2: return 1;
+            return 0
+
+        dim = len(word_set)
+        ret = np.zeros((dim,dim), dtype = np.uint8)
+        for i1, word_1 in enumerate(word_set):
+            for i2, word_2 in enumerate(word_set):
+                tup = map(lambda w: let(w[0], w[1], word_2), enumerate(word_1))
+                ret[i1,i2] = functools.reduce(acc, tup, 0)
         return ret
 
     def __init__(self, words_set, hard_mode, mask, incorrect, cache_handle = CachePolicy.IGNORE):
@@ -265,37 +260,38 @@ class WordleWordEntropy:
 
         self.word_matrix = WordleWordEntropy.get_entropy_matrix(cache_handle, self.cache_prefix, words_set)
 
-        for word in words_set:
+        for idx, word in enumerate(words_set):
             mat = self.word_matches(word, mask, incorrect)
             if mat: 
-                self.remaining.add(word)
+                self.remaining.add((idx, word))
 
         if self.hard_mode:
             self.all_words = self.remaining
         else:
-            self.all_words = words_set
-
-
+            self.all_words = list(enumerate(words_set))
 
 
     @staticmethod
     def get_entropy_matrix(cache_handle, prefix, all_words, letters = 8):
         matrix = None
+        loaded = False
 
-        if cache_handle == CachePolicy.LOAD:
+        if cache_handle in [CachePolicy.LOAD, CachePolicy.LOAD_AND_SAVE]:
             matrix = WordleWordEntropy.load_match_matrix(prefix, all_words, letters)
+            if matrix is not None: loaded = True
 
         if matrix is None:
             matrix = WordleWordEntropy.build_match_matrix(all_words)
-        if cache_handle == CachePolicy.SAVE:
+
+        if cache_handle == CachePolicy.SAVE or (cache_handle == CachePolicy.LOAD_AND_SAVE and loaded == False):
             WordleWordEntropy.save_match_matrix(prefix, all_words, matrix, letters)
 
         return matrix
 
-    def word_score_int(self, word):
+    def word_score_int(self, word_idx, word):
         groups = defaultdict(int)
-        for w in self.remaining:
-            key = self.word_matrix[(word, w)]
+        for i,_ in self.remaining:
+            key = self.word_matrix[word_idx, i ]
             groups[key]+=1
         total = len(self.remaining)
         ent = 0
@@ -304,21 +300,21 @@ class WordleWordEntropy:
             ent += p * log(p + 1e-50)
         return -ent, groups
 
-    def word_score(self, word):
-        return self.word_score_int(word)[0]
+    def word_score(self, word_idx, word):
+        return self.word_score_int(word_idx, word)[0]
 
-    def debug_ent(self, word):
-        ent, gr = self.word_score_int(word)
+    def debug_ent(self, word_idx, word):
+        ent, gr = self.word_score_int(word_idx, word)
         print(word)
         for k,s in gr.items():
             print("{} => {}".format(k, s)) 
 
     def best_matches(self, count, unique = False):
         ret = []
-        for word in self.all_words:
+        for idx, word in self.all_words:
             if unique and len(set(word)) != 5: continue 
             #if not self.word_matches(word): continue
-            ret.append([word, self.word_score(word)])
+            ret.append([word, self.word_score(idx, word)])
             ret.sort(key = lambda x: (x[1], x[0]), reverse = True)
             ret = ret[:count]
             #for w in ret:
@@ -340,7 +336,7 @@ if __name__ == "__main__":
                         help='word file to use')
     parser.add_argument('--no_hard_mode', dest='hard_mode', action='store_false', default=True,
                         help='use hard mode')
-    parser.add_argument('--cache_policy', dest='cache', default=CachePolicy.IGNORE, type=CachePolicy, choices=list(CachePolicy),
+    parser.add_argument('--cache_policy', dest='cache', default=CachePolicy.LOAD_AND_SAVE, type=CachePolicy, choices=list(CachePolicy),
                         help='Cache handling policy')
 
     args = parser.parse_args()
