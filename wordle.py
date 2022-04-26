@@ -11,7 +11,7 @@ import itertools
 import enum
 import hashlib
 import pickle
-from math import log
+from math import log2
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 from collections import namedtuple, defaultdict
@@ -137,7 +137,7 @@ class HighestProbability(BaseWordleSolver):
         return ctr
 
     def word_score(self, word_idx, word):
-        return sum(map(lambda i: log(self.hist[(i[0],i[1])]), enumerate(word)))
+        return sum(map(lambda i: log2(self.hist[(i[0],i[1])]), enumerate(word)))
 
 
 class LetterEntropy(BaseWordleSolver):
@@ -149,7 +149,7 @@ class LetterEntropy(BaseWordleSolver):
         if total == 0:
             raise Exception("letter_score partitioned an empty set. Verify `mask` and `incorrect` are consistent")
         p = lw / total
-        ent = -(p * log(p + 1e-30) + (1-p) * log(1-p + 1e-30))
+        ent = -(p * log2(p + 1e-30) + (1-p) * log2(1-p + 1e-30))
         return ent
 
     def __init__(self, words_set, hard_mode, mask, incorrect):
@@ -257,7 +257,12 @@ class WordEntropy(BaseWordleSolver):
         ent = 0
         for s in groups.values():
             p = s / total
-            ent += p * log(p + 1e-50)
+            ent += p * log2(p + 1e-50)
+        #if (-ent > 1): 
+        #    print(-ent, word)
+        #    print(total)
+        #    for k,s in groups.items():
+        #        print("{} => {}".format(k, s)) 
         return -ent, groups
 
     def word_score(self, word_idx, word):
@@ -335,7 +340,7 @@ class TestWordScore(unittest.TestCase):
     def testEmpty(self):
         words = ["hello", "ghost", "trial"]
         for word in words:
-            expected = sum([log(self.hist[(i,c)]) for (i,c) in enumerate(word)])
+            expected = sum([log2(self.hist[(i,c)]) for (i,c) in enumerate(word)])
             self.assertEqual(word_score(word, self.hist), expected)
 
     def testWithIncorrect(self):
