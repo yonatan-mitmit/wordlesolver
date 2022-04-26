@@ -68,22 +68,29 @@ def parse_mask(word):
 
 
 class BaseWordleSolver:
-    def __init__(self, words_set, hard_mode, mask, incorrect):
+    @staticmethod
+    def filterList(word_dict, mask, incorrect):
+        remaining = {}
+        for word, idx in word_dict.items():
+            mat = BaseWordleSolver.word_matches(word, mask, incorrect)
+            if mat: 
+                remaining[word]=idx
+        return remaining
+
+
+    def __init__(self, solutions, candidates, hard_mode, mask, incorrect):
         self.hard_mode = hard_mode
         self.mask = mask
         self.incorrect = incorrect
-        self.all_words = list(enumerate(words_set))
-        self.remaining = set()
+        self.all_solutions = {x[1]:x[0] for x in enumerate(solutions)}
+        self.all_candidates = {x[1]:x[0] for x in enumerate(candidates)}
 
-        for idx, word in self.all_words:
-            mat = self.word_matches(word, mask, incorrect)
-            if mat: 
-                self.remaining.add((idx, word))
+        self.remaining_solutions = BaseWordleSolver.filterList(self.all_solutions, mask, incorrect)
 
         if self.hard_mode:
-            self.candidates = self.remaining
+            self.remaining_candidates = BaseWordleSolver.filterList(self.all_candidates, mask, incorrect)
         else:
-            self.candidates = self.all_words 
+            self.candidates = self.all_candidates 
     
 
     @staticmethod
@@ -112,32 +119,35 @@ class BaseWordleSolver:
         raise NotImplemented("Base Model")
 
     def best_matches(self, count, unique = False):
-        ret = []
-        for idx, word in self.candidates:
+        best_candidates = []
+
+        for word, idx in self.remaining_candidates.items():
             if unique and len(set(word)) != 5: continue 
             #if not self.word_matches(word): continue
-            ret.append([word, self.word_score(idx, word)])
-            ret.sort(key = lambda x: (x[1], x[0]), reverse = True)
-            ret = ret[:count]
+            score = self.word_score(word, idx)
+            best_candidates.append((word, word in self.remaining_solutions,  score))
             #for w in ret:
             #    self.debug_ent(w[0])
 
-        return ret
+        best_candidates.sort(key = lambda x: (x[2], x[1], x[0]), reverse = True)
+        best_candidates = best_candidates[:count]
+
+        return best_candidates
 
 
 class HighestProbability(BaseWordleSolver):
-    def __init__(self, words_set, hard_mode, mask, incorrect):
-        super().__init__(words_set, hard_mode, mask, incorrect)
+    def __init__(self, solutions, candidates, hard_mode, mask, incorrect):
+        super().__init__(solutions, candidates, hard_mode, mask, incorrect)
         self.hist = self.build_hist()
 
     def build_hist(self):
         ctr = collections.Counter()
-        for _, word in self.all_words:
+        for word in self.all_solutions.keys():
             ctr.update(enumerate(word))
         return ctr
 
-    def word_score(self, word_idx, word):
-        return sum(map(lambda i: log2(self.hist[(i[0],i[1])]), enumerate(word)))
+    def word_score(self, word, word_idx):
+        return sum([log2(self.hist[(i[0],i[1])]) for i in enumerate(word) if self.hist[(i[0],i[1])] >0 ])
 
 
 class LetterEntropy(BaseWordleSolver):
@@ -152,12 +162,12 @@ class LetterEntropy(BaseWordleSolver):
         ent = -(p * log2(p + 1e-30) + (1-p) * log2(1-p + 1e-30))
         return ent
 
-    def __init__(self, words_set, hard_mode, mask, incorrect):
-        super().__init__(words_set, hard_mode, mask, incorrect)
+    def __init__(self, solutions, candidates, hard_mode, mask, incorrect):
+        super().__init__(solutions, candidates, hard_mode, mask, incorrect)
         lowercase = set(string.ascii_lowercase)
         self.map = {x : (set(), set()) for x in string.ascii_lowercase}
         
-        for idx, word in self.all_words:
+        for word in self.all_candidates.keys():
             mat = self.word_matches(word, mask, incorrect)
             if mat:
                 for letter in word:
@@ -168,7 +178,7 @@ class LetterEntropy(BaseWordleSolver):
         self.letter_ent = {x : self.letter_score(x) for x in string.ascii_lowercase}
 
 
-    def word_score(self, word_idx, word):
+    def word_score(self, word, word_idx):
         return sum(self.letter_ent[x] for x in set(word))
 
 
@@ -184,20 +194,31 @@ class CachePolicy(enum.Enum):
 
 class WordEntropy(BaseWordleSolver):
 
-    def __init__(self, words_set, hard_mode, mask, incorrect, cache_policy = CachePolicy.IGNORE):
-        super().__init__(words_set, hard_mode, mask, incorrect)
+    def __init__(self, all_solutions, all_candidates, hard_mode, mask, incorrect, cache_policy = CachePolicy.IGNORE):
+        super().__init__(all_solutions, all_candidates, hard_mode, mask, incorrect)
         self.cache_prefix = 'entmat'
-        self.word_matrix = WordEntropy.get_entropy_matrix(cache_policy, self.cache_prefix, words_set)
+        self.word_matrix = WordEntropy.get_entropy_matrix(cache_policy, self.cache_prefix, all_solutions, all_candidates)
+
+    @staticmethod 
+    def get_words_hash(*sets, letters=8):
+        hs = hashlib.sha256()
+        for word_set in sets:
+            for word in word_set:
+                hs.update(word.encode('utf-8'))
+        digest = hs.hexdigest()[:letters]
+        return digest
+
+    @staticmethod
+    def get_cache_name(prefix, *sets, letters=8):
+        digest = WordEntropy.get_words_hash(*sets, letters=letters)
+        fn = "{}-{}.npy".format(prefix, digest)
+        return fn
 
 
     @staticmethod
-    def load_match_matrix(prefix, word_set, letters = 8):
-        hs = hashlib.sha256()
-        for word in words:
-            hs.update(word.encode('utf-8'))
-        digest = hs.hexdigest()[:letters]
+    def load_match_matrix(prefix, all_solutions, all_candidates, letters = 8):
+        fn = WordEntropy.get_cache_name(prefix, all_solutions, all_candidates, letters = letters)
         try:
-            fn = "{}-{}.npy".format(prefix, digest)
             print("Loading entropy matrix from {}".format(fn));
             return np.load(fn)
         except FileNotFoundError as e:
@@ -205,55 +226,52 @@ class WordEntropy(BaseWordleSolver):
             return None
 
     @staticmethod
-    def save_match_matrix(prefix, word_set, matrix, letters = 8):
-        hs = hashlib.sha256()
-        for word in words:
-            hs.update(word.encode('utf-8'))
-        digest = hs.hexdigest()[:letters]
-        fn = "{}-{}.npy".format(prefix, digest)
+    def save_match_matrix(prefix, all_solutions, all_candidates, matrix, letters = 8):
+        fn = WordEntropy.get_cache_name(prefix, all_solutions, all_candidates, letters = letters)
         print("Saving entropy matrix to {}".format(fn));
         np.save(fn, matrix)
 
     @staticmethod
-    def build_match_matrix(word_set):
+    def build_match_matrix(solutions, candidates):
         acc = lambda x,y: x*3 + y
         def let(idx, letter, word_2):
             if letter == word_2[idx]: return 2;
             if letter in word_2: return 1;
             return 0
 
-        dim = len(word_set)
-        ret = np.zeros((dim,dim), dtype = np.uint8)
-        for i1, word_1 in enumerate(word_set):
-            for i2, word_2 in enumerate(word_set):
+        dim_solutions = len(solutions)
+        dim_candidates = len(candidates)
+        ret = np.zeros((dim_candidates, dim_solutions), dtype = np.uint8)
+        for i1, word_1 in enumerate(candidates):
+            for i2, word_2 in enumerate(solutions):
                 tup = map(lambda w: let(w[0], w[1], word_2), enumerate(word_1))
                 ret[i1,i2] = functools.reduce(acc, tup, 0)
         return ret
 
 
     @staticmethod
-    def get_entropy_matrix(cache_policy, prefix, all_words, letters = 8):
+    def get_entropy_matrix(cache_policy, prefix, all_solutions, all_candidates, letters = 8):
         matrix = None
         loaded = False
 
         if cache_policy in [CachePolicy.LOAD, CachePolicy.LOAD_AND_SAVE]:
-            matrix = WordEntropy.load_match_matrix(prefix, all_words, letters)
+            matrix = WordEntropy.load_match_matrix(prefix, all_solutions, all_candidates, letters)
             if matrix is not None: loaded = True
 
         if matrix is None:
-            matrix = WordEntropy.build_match_matrix(all_words)
+            matrix = WordEntropy.build_match_matrix(all_solutions, all_candidates)
 
         if cache_policy == CachePolicy.SAVE or (cache_policy == CachePolicy.LOAD_AND_SAVE and loaded == False):
-            WordEntropy.save_match_matrix(prefix, all_words, matrix, letters)
+            WordEntropy.save_match_matrix(prefix, all_solutions, all_candidates, matrix, letters)
 
         return matrix
 
-    def word_score_int(self, word_idx, word):
+    def word_score_int(self, candidate, candidate_idx):
         groups = defaultdict(int)
-        for i,_ in self.remaining:
-            key = self.word_matrix[word_idx, i ]
+        for _, sol_idx in self.remaining_solutions.items():
+            key = self.word_matrix[candidate_idx, sol_idx]
             groups[key]+=1
-        total = len(self.remaining)
+        total = len(self.remaining_solutions)
         ent = 0
         for s in groups.values():
             p = s / total
@@ -265,11 +283,11 @@ class WordEntropy(BaseWordleSolver):
         #        print("{} => {}".format(k, s)) 
         return -ent, groups
 
-    def word_score(self, word_idx, word):
-        return self.word_score_int(word_idx, word)[0]
+    def word_score(self, candidate, candidate_idx):
+        return self.word_score_int(candidate, candidate_idx)[0]
 
-    def debug_ent(self, word_idx, word):
-        ent, gr = self.word_score_int(word_idx, word)
+    def debug_ent(self, candidate, candidate_idx):
+        ent, gr = self.word_score_int(candidate, candidate_idx)
         print(word)
         for k,s in gr.items():
             print("{} => {}".format(k, s)) 
@@ -283,6 +301,14 @@ def relevantArgs(func, args, kwargs, ignore=['self']):
     func_args = list(filter(lambda x: x not in ignore, spec.args))
     unbound = func_args[len(args):]
     return { x: kwargs[x] for x in unbound if x in kwargs}
+
+def readWordFile(fn):
+    words = set()
+    with open(fn,'r') as wf:
+        for line in wf.readlines():
+            line = line.strip()
+            if(len(line)==5): words.add(line)
+    return words
 
 if __name__ == "__main__":
     solvers = find_solvers()
@@ -299,7 +325,9 @@ if __name__ == "__main__":
     parser.add_argument('--count', dest='count', default=10, 
                         help='number of results')
     parser.add_argument('--wordfile', dest='wordfile', default='./wordlelist.txt',
-                        help='word file to use')
+                        help='valid solutions for the puzzle')
+    parser.add_argument('--wordfile_accepted', dest='wordfile_accepted', default='./wordle_accepted.txt',
+                        help='additional legal words allowed. Use empty string to ignore')
     parser.add_argument('--no_hard_mode', dest='hard_mode', action='store_false', default=True,
                         help='use hard mode')
     parser.add_argument('--cache_policy', dest='cache_policy', default=CachePolicy.LOAD_AND_SAVE, type=CachePolicy, choices=list(CachePolicy),
@@ -313,24 +341,24 @@ if __name__ == "__main__":
     #hist = build_hist(wordfile)
     #for w, s in (x for x in best_matches(wordfile=args.wordfile, hist = hist, count = args.count, mask = mask, incorrect = set(args.incorrect), unique = args.unique) if x[1] > 0):
     #    print("{} => {}".format(w, s))
-    words = set()
-    with open(args.wordfile,'r') as wf:
-        for line in wf.readlines():
-            line = line.strip()
-            if(len(line)==5): words.add(line)
+    solutions = readWordFile(args.wordfile)
+    if args.wordfile_accepted:
+        candidates = readWordFile(args.wordfile_accepted)
+    else:
+        candidates = set()
 
-    solver_args = (words, args.hard_mode, mask, set(args.incorrect)) 
+    candidates.update(solutions)
+
+
+    solver_args = (solutions, candidates, args.hard_mode, mask, set(args.incorrect)) 
     extraArgs = relevantArgs(solver, solver_args, vars(args))
     we = solver(*solver_args, **extraArgs)
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
     res = we.best_matches(args.count, unique = args.unique)
 
-    if any(x[1] > 0 for x in res):
-        for w, s in (x for x in res if x[1] > 0):
-            print("{} => {}".format(w, s))
-    else:
-        for w, s in (x for x in res):
-            print("{} => {}".format(w, s))
+    for word, sol, score in res:
+        symbol = '*' if sol else ' ' 
+        print("{} {} => {}".format(word, symbol, score))
 
 #TESTS
 class TestWordScore(unittest.TestCase):
