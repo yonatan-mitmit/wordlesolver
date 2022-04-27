@@ -439,6 +439,9 @@ if __name__ == "__main__":
                         help='use hard mode')
     parser.add_argument('--cache_policy', dest='cache_policy', default=CachePolicy.LOAD_AND_SAVE, type=CachePolicy, choices=list(CachePolicy),
                         help='Cache handling policy')
+    parser.add_argument('-n','--dummy', dest='dummy', default=False, action='store_true', 
+                        help="Don't actually run the solver, just do setup")
+                        
 
 
     args = parser.parse_args()
@@ -463,11 +466,12 @@ if __name__ == "__main__":
     extraArgs = relevantArgs(solver, solver_args, vars(args))
     we = solver(*solver_args, **extraArgs)
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
-    res = we.best_matches(args.count, unique = args.unique)
+    if not args.dummy:
+        res = we.best_matches(args.count, unique = args.unique)
 
-    for word, sol, score in res:
-        symbol = '*' if sol else ' ' 
-        print("{} {} => {}".format(word, symbol, score))
+        for word, sol, score in res:
+            symbol = '*' if sol else ' ' 
+            print("{} {} => {}".format(word, symbol, score))
 
 #TESTS
 class TestWordScore(unittest.TestCase):
