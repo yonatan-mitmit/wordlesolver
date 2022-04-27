@@ -1,8 +1,13 @@
 """
-Unify into one base class and derivatives
-Fix unittests to focus on parsers and not solution
+Fix unittests to focus on parsers and not solver
+
+Change input from mask/incorrect to set of previous guess and responses to build list (soare,gybbb)...
+
+Data structure is a 5 sets of candidate letters
+Each input word changes the list
 
 """
+
 import collections
 import unittest
 import argparse
@@ -21,6 +26,109 @@ import functools
 
 wordfile = "wordlist.txt"
 
+class Color(enum.Enum):
+    GRAY = 'b'
+    YELLOW = 'y'
+    GREEN = 'g'
+    
+    def __str__(self):
+        return self.value
+
+class LetterMatch:
+    # Green tells me exact location, and sets lower bound on count (number of yellow and green)
+    # Yellow forbids exact location, and sets lower bound on count (number of yellow and green)
+    # Grey tells a +1 of exact count
+    #
+    def __init__(self, size=5):
+        self.greens = {}
+        self.yellows = defaultdict(set)
+        self.lbs = {}
+        self.counts = {}
+        self.size = size
+
+    def matches(self, word):
+        for (i,l) in self.greens.items():
+            if word[i] != l: return False
+        for (i,ls) in self.yellows.items():
+            if word[i] in ls: return False
+        ctr = collections.Counter(word)
+        for l, lb in self.lbs.items():
+            if ctr[l]<lb:
+                return False
+        for l, c in self.counts.items():
+            if ctr[l]!=c:
+                return False
+        return True
+
+    def update(self, word, results):
+        ctr = collections.Counter(word)
+        exacts = set()
+        lb = set()
+
+        for i in range(len(word)):
+            result = results[i]
+            letter = word[i]
+            match result:
+                case Color.GRAY: 
+                    exacts.add(letter)
+                case Color.YELLOW:
+                    self.yellows[i].add(letter)
+                    lb.add(letter)
+                case Color.GREEN:
+                    self.greens[i] = letter
+                    lb.add(letter)
+        for l in exacts:
+            self.counts[l] = ctr[l] - 1
+        for l in (lb - exacts): # Letters for which we have yellow or green, but not gray
+            self.lbs[l] = max(ctr[l], self.lbs.get(l,0))
+
+
+wcGrammer = Grammar("""
+    pair = word ":" colors
+    colors = color*
+    word = letter*
+    color = green / yellow / gray
+    green = "g"
+    yellow = "y"
+    gray = "b"
+    letter = ~r"[a-z]"
+""")
+
+Pair = namedtuple("Pair", ['word','colors'])
+
+class WordColorVisitor(NodeVisitor):
+    def visit_pair(self, node, children):
+        return Pair(children[0], children[2])
+                
+    def visit_word(self, node, children):
+        return ''.join(children)
+
+    def visit_colors(self, node, children):
+        return children
+    
+    def visit_color(self, node, children):
+        return children[0]
+
+    def visit_green(self,node,children):
+        return Color.GREEN
+
+    def visit_yellow(self,node,children):
+        return Color.YELLOW
+
+    def visit_gray(self,node,children):
+        return Color.GRAY
+
+    def visit_letter(self, node, children):
+        return node.text.lower()
+
+    def generic_visit(self, node, children):
+        return children or node
+
+wcVisitor = WordColorVisitor()
+
+def parse_word_color(wordcolor):
+    tree = wcGrammer.parse(wordcolor)
+    return wcVisitor.visit(tree)
 
 word_grammer = Grammar("""
     word = atom*
@@ -69,26 +177,25 @@ def parse_mask(word):
 
 class BaseWordleSolver:
     @staticmethod
-    def filterList(word_dict, mask, incorrect):
+    def filterList(word_dict, letter_match):
         remaining = {}
         for word, idx in word_dict.items():
-            mat = BaseWordleSolver.word_matches(word, mask, incorrect)
-            if mat: 
+            #mat = BaseWordleSolver.word_matches(word, mask, incorrect)
+            if letter_match.matches(word):
                 remaining[word]=idx
         return remaining
 
 
-    def __init__(self, solutions, candidates, hard_mode, mask, incorrect):
+    def __init__(self, solutions, candidates, hard_mode, letter_match):
         self.hard_mode = hard_mode
-        self.mask = mask
-        self.incorrect = incorrect
         self.all_solutions = {x[1]:x[0] for x in enumerate(solutions)}
         self.all_candidates = {x[1]:x[0] for x in enumerate(candidates)}
+        self.letter_match = letter_match
 
-        self.remaining_solutions = BaseWordleSolver.filterList(self.all_solutions, mask, incorrect)
+        self.remaining_solutions = BaseWordleSolver.filterList(self.all_solutions, self.letter_match)
 
         if self.hard_mode:
-            self.remaining_candidates = BaseWordleSolver.filterList(self.all_candidates, mask, incorrect)
+            self.remaining_candidates = BaseWordleSolver.filterList(self.all_candidates, self.letter_match)
         else:
             self.candidates = self.all_candidates 
     
@@ -115,7 +222,7 @@ class BaseWordleSolver:
         return True
 
 
-    def word_score(self, word_idx, word):
+    def word_score(self, word, word_idx):
         raise NotImplemented("Base Model")
 
     def best_matches(self, count, unique = False):
@@ -134,10 +241,13 @@ class BaseWordleSolver:
 
         return best_candidates
 
+    def all_scores(self):
+        return { word : self.word_score(word, idx) for (word, idx) in self.all_candidates.items()} 
+
 
 class HighestProbability(BaseWordleSolver):
-    def __init__(self, solutions, candidates, hard_mode, mask, incorrect):
-        super().__init__(solutions, candidates, hard_mode, mask, incorrect)
+    def __init__(self, solutions, candidates, hard_mode, letter_match):
+        super().__init__(solutions, candidates, hard_mode, letter_match)
         self.hist = self.build_hist()
 
     def build_hist(self):
@@ -162,8 +272,8 @@ class LetterEntropy(BaseWordleSolver):
         ent = -(p * log2(p + 1e-30) + (1-p) * log2(1-p + 1e-30))
         return ent
 
-    def __init__(self, solutions, candidates, hard_mode, mask, incorrect):
-        super().__init__(solutions, candidates, hard_mode, mask, incorrect)
+    def __init__(self, solutions, candidates, hard_mode, letter_match):
+        super().__init__(solutions, candidates, hard_mode, letter_match)
         lowercase = set(string.ascii_lowercase)
         self.map = {x : (set(), set()) for x in string.ascii_lowercase}
         
@@ -194,8 +304,8 @@ class CachePolicy(enum.Enum):
 
 class WordEntropy(BaseWordleSolver):
 
-    def __init__(self, all_solutions, all_candidates, hard_mode, mask, incorrect, cache_policy = CachePolicy.IGNORE):
-        super().__init__(all_solutions, all_candidates, hard_mode, mask, incorrect)
+    def __init__(self, all_solutions, all_candidates, hard_mode, letter_match , cache_policy = CachePolicy.IGNORE):
+        super().__init__(all_solutions, all_candidates, hard_mode, letter_match)
         self.cache_prefix = 'entmat'
         self.word_matrix = WordEntropy.get_entropy_matrix(cache_policy, self.cache_prefix, all_solutions, all_candidates)
 
@@ -316,10 +426,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Best wordle match.')
     parser.add_argument('--solver', type=str, dest='solver', default='WordEntropy', choices=list(solvers.keys()),
                         help="Solver to use")
-    parser.add_argument('--mask', type=str, dest='mask', default="*****",
-                        help="what's already known. Use * for unknown, Uppercase for match, and lowercase when location unknown")
-    parser.add_argument('--incorrect', dest='incorrect', default = "",
-                        help='known letters that aren\'t matching')
+    #parser.add_argument('--mask', type=str, dest='mask', default="*****",
+    #                    help="what's already known. Use * for unknown, Uppercase for match, and lowercase when location unknown")
+    #parser.add_argument('--incorrect', dest='incorrect', default = "",
+    #                    help='known letters that aren\'t matching')
+    parser.add_argument('-m', '--matches', nargs="*", default=[],
+                        help="pairs of <word:match> where match is a sequence of [g,y,b] for green, yellow, black (gray)" )
     parser.add_argument('--unique', dest='unique', default=False, action='store_true',
                         help='forbid letter repetition')
     parser.add_argument('--count', dest='count', default=10, 
@@ -335,7 +447,7 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
-    mask = parse_mask(args.mask)
+    matches = [parse_word_color(x) for x in args.matches]
     solver = solvers[args.solver]
     #print ("mask {}, incorrect {}, unique {}".format(mask, args.incorrect, args.unique))
     #hist = build_hist(wordfile)
@@ -349,8 +461,10 @@ if __name__ == "__main__":
 
     candidates.update(solutions)
 
-
-    solver_args = (solutions, candidates, args.hard_mode, mask, set(args.incorrect)) 
+    letter_match = LetterMatch()
+    for mat in matches:
+        letter_match.update(*mat)
+    solver_args = (solutions, candidates, args.hard_mode, letter_match) 
     extraArgs = relevantArgs(solver, solver_args, vars(args))
     we = solver(*solver_args, **extraArgs)
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
