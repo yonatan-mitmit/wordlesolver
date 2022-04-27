@@ -1,11 +1,6 @@
 """
 Fix unittests to focus on parsers and not solver
 
-Change input from mask/incorrect to set of previous guess and responses to build list (soare,gybbb)...
-
-Data structure is a 5 sets of candidate letters
-Each input word changes the list
-
 """
 
 import collections
