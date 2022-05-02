@@ -17,6 +17,7 @@ from parsimonious.nodes import NodeVisitor
 from collections import namedtuple, defaultdict
 import numpy as np
 import functools
+import random
 
 
 wordfile = "wordlist.txt"
@@ -57,7 +58,7 @@ class LetterMatch:
 
     def update(self, word, results):
         ctr = collections.Counter(word)
-        exacts = set()
+        exacts = defaultdict(int)
         lb = set()
 
         for i in range(len(word)):
@@ -65,16 +66,16 @@ class LetterMatch:
             letter = word[i]
             match result:
                 case Color.GRAY: 
-                    exacts.add(letter)
+                    exacts[letter] += 1
                 case Color.YELLOW:
                     self.yellows[i].add(letter)
                     lb.add(letter)
                 case Color.GREEN:
                     self.greens[i] = letter
                     lb.add(letter)
-        for l in exacts:
-            self.counts[l] = ctr[l] - 1
-        for l in (lb - exacts): # Letters for which we have yellow or green, but not gray
+        for l,c in exacts.items():
+            self.counts[l] = ctr[l] - c
+        for l in (lb - set(exacts.keys())): # Letters for which we have yellow or green, but not gray
             self.lbs[l] = max(ctr[l], self.lbs.get(l,0))
 
 
@@ -125,49 +126,6 @@ def parse_word_color(wordcolor):
     tree = wcGrammer.parse(wordcolor)
     return wcVisitor.visit(tree)
 
-word_grammer = Grammar("""
-    word = atom*
-    atom = match_letter / mismatch_letter / mismatch_range / wildcard
-    match_letter = ~r"[A-Z]"
-    mismatch_letter = ~r"[a-z]"
-    mismatch_range = "[" mismatch_letter* "]"
-    wildcard = "*"
-""")
-
-Match = namedtuple("Match", ['letter'])
-Mismatch = namedtuple("Mismatch", ['letter'])
-Range = namedtuple("Range", ['letters'])
-Wildcard = "*"
-
-class WordVisitor(NodeVisitor):
-    def visit_word(self, node, children):
-        return children
-
-    def visit_atom(self, node, children):
-        return children[0]
-
-    def visit_mismatch_range(self, node, children):
-        _, letters , _ = children
-        return Range([x.letter for x in letters])
-
-    def visit_match_letter(self, node, children):
-        return Match(node.text.lower())
-    
-    def visit_mismatch_letter(self, node, children):
-        return Mismatch(node.text)
-
-    def visit_wildcard(self, node, children):
-        return Wildcard
-
-    def generic_visit(self, node, children):
-        return children or node
-
-GlobalWV = WordVisitor()
-
-def parse_mask(word):
-    tree = word_grammer.parse(word)
-    return GlobalWV.visit(tree)
-
 
 
 class BaseWordleSolver:
@@ -175,7 +133,6 @@ class BaseWordleSolver:
     def filterList(word_dict, letter_match):
         remaining = {}
         for word, idx in word_dict.items():
-            #mat = BaseWordleSolver.word_matches(word, mask, incorrect)
             if letter_match.matches(word):
                 remaining[word]=idx
         return remaining
@@ -192,30 +149,8 @@ class BaseWordleSolver:
         if self.hard_mode:
             self.remaining_candidates = BaseWordleSolver.filterList(self.all_candidates, self.letter_match)
         else:
-            self.candidates = self.all_candidates 
+            self.remaining_candidates = self.all_candidates.copy()
     
-
-    @staticmethod
-    def word_matches(word, mask, incorrect):
-        wordSet = set(word)
-        for i in range(len(word)):
-            letter = word[i]
-            if letter in incorrect: return False
-            elif mask[i] == Wildcard: continue
-            elif type(mask[i]) is Match:
-                if mask[i].letter == letter: continue
-                else: return False; 
-            elif type(mask[i]) == Mismatch:
-                if mask[i].letter == letter: return False; 
-                if not mask[i].letter in wordSet: return False;
-                continue
-            elif type(mask[i]) == Range:
-                for let in mask[i].letters:
-                    if let == letter: return False; 
-                    if not let in wordSet: return False;
-                continue
-        return True
-
 
     def word_score(self, word, word_idx):
         raise NotImplemented("Base Model")
@@ -225,7 +160,6 @@ class BaseWordleSolver:
 
         for word, idx in self.remaining_candidates.items():
             if unique and len(set(word)) != 5: continue 
-            #if not self.word_matches(word): continue
             score = self.word_score(word, idx)
             best_candidates.append((word, word in self.remaining_solutions,  score))
             #for w in ret:
@@ -238,6 +172,9 @@ class BaseWordleSolver:
 
     def all_scores(self):
         return { word : self.word_score(word, idx) for (word, idx) in self.all_candidates.items()} 
+
+    def all_scores_list(self):
+        return sorted(self.all_score.items(), key = lambda x: (x[1], x[0])) 
 
 
 class HighestProbability(BaseWordleSolver):
@@ -262,7 +199,7 @@ class LetterEntropy(BaseWordleSolver):
         (lw, lwo) = [len(x) for x in pair]
         total = lw + lwo
         if total == 0:
-            raise Exception("letter_score partitioned an empty set. Verify `mask` and `incorrect` are consistent")
+            raise Exception("letter_score partitioned an empty set. Verify letter_match isn't empty, and answer is consistent")
         p = lw / total
         ent = -(p * log2(p + 1e-30) + (1-p) * log2(1-p + 1e-30))
         return ent
@@ -272,13 +209,11 @@ class LetterEntropy(BaseWordleSolver):
         lowercase = set(string.ascii_lowercase)
         self.map = {x : (set(), set()) for x in string.ascii_lowercase}
         
-        for word in self.all_candidates.keys():
-            mat = self.word_matches(word, mask, incorrect)
-            if mat:
-                for letter in word:
-                    self.map[letter][0].add(word)
-                for letter in (lowercase - set(word)):
-                    self.map[letter][1].add(word)
+        for word in self.remaining_candidates.keys():
+            for letter in word:
+                self.map[letter][0].add(word)
+            for letter in (lowercase - set(word)):
+                self.map[letter][1].add(word)
 
         self.letter_ent = {x : self.letter_score(x) for x in string.ascii_lowercase}
 
@@ -299,7 +234,7 @@ class CachePolicy(enum.Enum):
 
 class WordEntropy(BaseWordleSolver):
 
-    def __init__(self, all_solutions, all_candidates, hard_mode, letter_match , cache_policy = CachePolicy.IGNORE):
+    def __init__(self, all_solutions, all_candidates, hard_mode, letter_match , cache_policy = CachePolicy.LOAD):
         super().__init__(all_solutions, all_candidates, hard_mode, letter_match)
         self.cache_prefix = 'entmat'
         self.word_matrix = WordEntropy.get_entropy_matrix(cache_policy, self.cache_prefix, all_solutions, all_candidates)
@@ -397,6 +332,87 @@ class WordEntropy(BaseWordleSolver):
         for k,s in gr.items():
             print("{} => {}".format(k, s)) 
 
+class Board:
+    def __init__(self, solution):
+        self._solution = solution
+    
+    def score(self, word):
+        ret = [Color.GRAY] * 5
+        ctr = collections.Counter(self._solution)
+        # mark greens first
+        for i,l in enumerate(word):
+            if l == self._solution[i]:
+                ret[i] = Color.GREEN
+                ctr[l] -= 1
+        for i,l in enumerate(word):
+            if l != self._solution[i] and ctr[l] > 0:
+                ret[i] = Color.YELLOW
+                ctr[l] -= 1
+        return ret
+
+    def solution(self):
+        return self._solution
+
+
+class Game:
+    def __init__(self, board, solver_fact):
+        self.board = board
+        self.solver_fact = solver_fact
+        self.letter_match = LetterMatch()
+
+    def use_word(self, word):
+        score = self.board.score(word)
+        self.letter_match.update(word, score)
+        return ''.join((str(x) for x in score))
+
+    def next_guess(self):
+        solver = self.solver_fact(self.letter_match)
+        guess = solver.best_matches(1)
+        if len(guess) == 0:
+            raise Exception("Can't find solution")
+        return guess[0][0]
+
+    def run_game(self, first_word = None, rounds = 6, disp = True):
+        total_rounds = rounds
+        next_word = first_word
+
+        for i in range(rounds):
+            if next_word is None:
+                next_word = self.next_guess()
+                if first_word is None: first_word = next_word
+            score = self.use_word(next_word)
+            if disp: print ("{} => {} ".format(next_word, score))
+            if next_word == self.board.solution():
+                if disp:
+                    print("'{}' found in {} steps starting from '{}'".format(self.board.solution(), i+1, first_word))
+                return i
+            next_word = None 
+        print("Failed to find word in {} rounds".format(i+1))
+        return -1 
+
+def game(solution, first_word = None, solver_class = WordEntropy, solutions = None, candidates = None, hard_mode = True):
+    solver_fact = lambda lm: solver_class(solutions, candidates, hard_mode, lm)
+    g = Game(Board(solution), solver_fact)
+    return g.run_game(first_word)
+
+def test(first_word, games = 100, solutions = None, candidates = None, hard_mode=True):
+    rets = {} 
+    failed = set()
+    for g in range(games):
+        solution = random.choice(list(solutions))
+        print("Round {}. Word {}".format(g, solution))
+        rounds = game(solution, first_word, solutions = solutions, candidates = candidates, hard_mode = hard_mode) 
+        if (rounds < 0):
+            failed.add(solution)
+        else:
+            rets[solution] = rounds + 1
+
+    print("Ran {} rounds. Starting at {}. Average rounds was {} and failed {} times".format(games, first_word, sum(rets.values())/len(rets), len(failed)))
+    return rets, failed
+
+
+
+
 def find_solvers():
     return dict(map(lambda x: (x.__name__ , x), BaseWordleSolver.__subclasses__()))
 
@@ -458,6 +474,8 @@ if __name__ == "__main__":
         candidates = set()
 
     candidates.update(solutions)
+    candidates = sorted(list(candidates))
+    solutions = sorted(list(solutions))
 
     letter_match = LetterMatch()
     for mat in matches:
@@ -465,6 +483,7 @@ if __name__ == "__main__":
     solver_args = (solutions, candidates, args.hard_mode, letter_match) 
     extraArgs = relevantArgs(solver, solver_args, vars(args))
     we = solver(*solver_args, **extraArgs)
+    solver_fact = lambda lm, solver_class=WordEntropy, solutions=solutions, candidates=candidates : solver_class(solutions, candidates, True, lm)
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
     if not args.dummy:
         res = we.best_matches(args.count, unique = args.unique)
@@ -473,7 +492,8 @@ if __name__ == "__main__":
             symbol = '*' if sol else ' ' 
             print("{} {} => {}".format(word, symbol, score))
 
-#TESTS
+#TESTS - Currently broken - use old functional interface and predate the inclusion. 
+#Should be rewritten
 class TestWordScore(unittest.TestCase):
     def setUp(self):
         self.hist = build_hist(wordfile)
