@@ -162,8 +162,6 @@ class BaseWordleSolver:
             if unique and len(set(word)) != 5: continue 
             score = self.word_score(word, idx)
             best_candidates.append((word, word in self.remaining_solutions,  score))
-            #for w in ret:
-            #    self.debug_ent(w[0])
 
         best_candidates.sort(key = lambda x: (x[2], x[1], x[0]), reverse = True)
         best_candidates = best_candidates[:count]
@@ -306,31 +304,17 @@ class WordEntropy(BaseWordleSolver):
 
         return matrix
 
-    def word_score_int(self, candidate, candidate_idx):
-        groups = defaultdict(int)
-        for _, sol_idx in self.remaining_solutions.items():
-            key = self.word_matrix[candidate_idx, sol_idx]
-            groups[key]+=1
-        total = len(self.remaining_solutions)
-        ent = 0
-        for s in groups.values():
-            p = s / total
-            ent += p * log2(p + 1e-50)
-        #if (-ent > 1): 
-        #    print(-ent, word)
-        #    print(total)
-        #    for k,s in groups.items():
-        #        print("{} => {}".format(k, s)) 
-        return -ent, groups
-
     def word_score(self, candidate, candidate_idx):
-        return self.word_score_int(candidate, candidate_idx)[0]
+        rs = np.fromiter(self.remaining_solutions.values(), dtype=int)
+        keys = self.word_matrix[candidate_idx, rs]
+        unique, counts = np.unique(keys, return_counts=True)
 
-    def debug_ent(self, candidate, candidate_idx):
-        ent, gr = self.word_score_int(candidate, candidate_idx)
-        print(word)
-        for k,s in gr.items():
-            print("{} => {}".format(k, s)) 
+        total = len(self.remaining_solutions)
+        probs = counts / total
+        ent = 0
+
+        ent = np.log2(probs) * probs
+        return -np.sum(ent)
 
 class Board:
     def __init__(self, solution):
