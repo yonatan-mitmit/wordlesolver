@@ -257,10 +257,10 @@ class WordEntropy(BaseWordleSolver):
     def load_match_matrix(prefix, all_solutions, all_candidates, letters = 8):
         fn = WordEntropy.get_cache_name(prefix, all_solutions, all_candidates, letters = letters)
         try:
-            print("Loading entropy matrix from {}".format(fn));
+            #print("Loading entropy matrix from {}".format(fn));
             return np.load(fn)
         except FileNotFoundError as e:
-            print("No match matrix found")
+            print("Tried, but failed to load match_matrix from {} ")
             return None
 
     @staticmethod
@@ -271,6 +271,8 @@ class WordEntropy(BaseWordleSolver):
 
     @staticmethod
     def build_match_matrix(solutions, candidates):
+        print("Building match matrix");
+
         acc = lambda x,y: x*3 + y
         def let(idx, letter, word_2):
             if letter == word_2[idx]: return 2;
@@ -313,8 +315,9 @@ class WordEntropy(BaseWordleSolver):
         probs = counts / total
         ent = 0
 
-        ent = np.log2(probs) * probs
-        return -np.sum(ent)
+        #ent = np.log2(probs) * probs
+        #return -np.sum(ent)
+        return -np.dot(np.log2(probs), probs)
 
 class Board:
     def __init__(self, solution):
