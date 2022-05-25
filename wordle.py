@@ -168,6 +168,10 @@ class BaseWordleSolver:
 
         return best_candidates
 
+    def entropy(self):
+        l = len(self.remaining_solutions)
+        return l, log2(l)
+
     def all_scores(self):
         return { word : self.word_score(word, idx) for (word, idx) in self.all_candidates.items()} 
 
@@ -474,6 +478,7 @@ if __name__ == "__main__":
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
     if not args.dummy:
         res = we.best_matches(args.count, unique = args.unique)
+        print("There are {} possible solutions ({} bits of info)".format(*we.entropy()))
 
         for word, sol, score in res:
             symbol = '*' if sol else ' ' 
