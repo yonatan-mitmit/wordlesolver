@@ -21,11 +21,10 @@ import random
 
 
 wordfile = "wordlist.txt"
-
 class Color(enum.Enum):
-    GRAY = 'b'
-    YELLOW = 'y'
-    GREEN = 'g'
+    GRAY = '⬛'
+    YELLOW = '🟨'
+    GREEN = '🟩'
     
     def __str__(self):
         return self.value
