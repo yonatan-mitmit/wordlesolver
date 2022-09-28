@@ -32,11 +32,11 @@ class Color(enum.Enum):
 class LetterMatch:
     # Green tells me exact location, and sets lower bound on count (number of yellow and green)
     # Yellow forbids exact location, and sets lower bound on count (number of yellow and green)
-    # Grey tells a +1 of exact count
+    # Grey tells a +1 of exact count and forbids exact location
     #
     def __init__(self, size=5):
         self.greens = {}
-        self.yellows = defaultdict(set)
+        self.forbidden = defaultdict(set)
         self.lbs = {}
         self.counts = {}
         self.size = size
@@ -44,7 +44,7 @@ class LetterMatch:
     def matches(self, word):
         for (i,l) in self.greens.items():
             if word[i] != l: return False
-        for (i,ls) in self.yellows.items():
+        for (i,ls) in self.forbidden.items():
             if word[i] in ls: return False
         ctr = collections.Counter(word)
         for l, lb in self.lbs.items():
@@ -66,8 +66,9 @@ class LetterMatch:
             match result:
                 case Color.GRAY: 
                     exacts[letter] += 1
+                    self.forbidden[i].add(letter)
                 case Color.YELLOW:
-                    self.yellows[i].add(letter)
+                    self.forbidden[i].add(letter)
                     lb.add(letter)
                 case Color.GREEN:
                     self.greens[i] = letter
