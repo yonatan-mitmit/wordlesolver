@@ -4,6 +4,7 @@ Fix unittests to focus on parsers and not solver
 """
 
 import collections
+from typing import Dict
 import unittest
 import argparse
 import string
@@ -130,7 +131,7 @@ def parse_word_color(wordcolor):
 
 class BaseWordleSolver:
     @staticmethod
-    def filterList(word_dict, letter_match):
+    def filterList(word_dict : dict[str, int], letter_match : LetterMatch):
         remaining = {}
         for word, idx in word_dict.items():
             if letter_match.matches(word):
@@ -138,11 +139,17 @@ class BaseWordleSolver:
         return remaining
 
 
-    def __init__(self, solutions, candidates, hard_mode, letter_match):
+    def __init__(self, solutions, candidates, hard_mode):
         self.hard_mode = hard_mode
         self.all_solutions = {x[1]:x[0] for x in enumerate(solutions)}
         self.all_candidates = {x[1]:x[0] for x in enumerate(candidates)}
-        self.letter_match = letter_match
+        self.letter_match = LetterMatch()
+
+        self.remaining_solutions = self.all_solutions.copy()
+        self.remaining_candidates = self.all_candidates.copy()
+
+    def update(self, word : str, results : list[Color]) -> None:
+        self.letter_match.update(word, results)
 
         self.remaining_solutions = BaseWordleSolver.filterList(self.all_solutions, self.letter_match)
 
@@ -150,7 +157,7 @@ class BaseWordleSolver:
             self.remaining_candidates = BaseWordleSolver.filterList(self.all_candidates, self.letter_match)
         else:
             self.remaining_candidates = self.all_candidates.copy()
-    
+
 
     def word_score(self, word, word_idx):
         raise NotImplemented("Base Model")
@@ -180,8 +187,8 @@ class BaseWordleSolver:
 
 
 class HighestProbability(BaseWordleSolver):
-    def __init__(self, solutions, candidates, hard_mode, letter_match):
-        super().__init__(solutions, candidates, hard_mode, letter_match)
+    def __init__(self, solutions, candidates, hard_mode):
+        super().__init__(solutions, candidates, hard_mode)
         self.hist = self.build_hist()
 
     def build_hist(self):
@@ -206,8 +213,8 @@ class LetterEntropy(BaseWordleSolver):
         ent = -(p * log2(p + 1e-30) + (1-p) * log2(1-p + 1e-30))
         return ent
 
-    def __init__(self, solutions, candidates, hard_mode, letter_match):
-        super().__init__(solutions, candidates, hard_mode, letter_match)
+    def __init__(self, solutions, candidates, hard_mode):
+        super().__init__(solutions, candidates, hard_mode)
         lowercase = set(string.ascii_lowercase)
         self.map = {x : (set(), set()) for x in string.ascii_lowercase}
         
@@ -236,8 +243,8 @@ class CachePolicy(enum.Enum):
 
 class WordEntropy(BaseWordleSolver):
 
-    def __init__(self, all_solutions, all_candidates, hard_mode, letter_match , cache_policy = CachePolicy.LOAD):
-        super().__init__(all_solutions, all_candidates, hard_mode, letter_match)
+    def __init__(self, all_solutions, all_candidates, hard_mode, cache_policy = CachePolicy.LOAD):
+        super().__init__(all_solutions, all_candidates, hard_mode)
         self.cache_prefix = 'entmat'
         self.word_matrix = WordEntropy.get_entropy_matrix(cache_policy, self.cache_prefix, all_solutions, all_candidates)
 
@@ -348,17 +355,17 @@ class Board:
 class Game:
     def __init__(self, board, solver_fact):
         self.board = board
-        self.solver_fact = solver_fact
-        self.letter_match = LetterMatch()
+        self.solver = solver_fact()
+        print(self.solver)
+        print('-----')
 
     def use_word(self, word):
         score = self.board.score(word)
-        self.letter_match.update(word, score)
+        self.solver.update(word, score)
         return ''.join((str(x) for x in score))
 
     def next_guess(self):
-        solver = self.solver_fact(self.letter_match)
-        guess = solver.best_matches(1)
+        guess = self.solver.best_matches(1)
         if len(guess) == 0:
             raise Exception("Can't find solution")
         return guess[0][0]
@@ -382,7 +389,7 @@ class Game:
         return -1 
 
 def game(solution, first_word = None, solver_class = WordEntropy, solutions = None, candidates = None, hard_mode = True):
-    solver_fact = lambda lm: solver_class(solutions, candidates, hard_mode, lm)
+    solver_fact = lambda : solver_class(solutions, candidates, hard_mode)
     g = Game(Board(solution), solver_fact)
     return g.run_game(first_word)
 
@@ -468,12 +475,11 @@ if __name__ == "__main__":
     candidates = sorted(list(candidates))
     solutions = sorted(list(solutions))
 
-    letter_match = LetterMatch()
-    for mat in matches:
-        letter_match.update(*mat)
-    solver_args = (solutions, candidates, args.hard_mode, letter_match) 
+    solver_args = (solutions, candidates, args.hard_mode) 
     extraArgs = relevantArgs(solver, solver_args, vars(args))
     we = solver(*solver_args, **extraArgs)
+    for mat in matches:
+        we.update(*mat)
     solver_fact = lambda lm, solver_class=WordEntropy, solutions=solutions, candidates=candidates : solver_class(solutions, candidates, True, lm)
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
     if not args.dummy:
@@ -483,98 +489,5 @@ if __name__ == "__main__":
         for word, sol, score in res:
             symbol = '*' if sol else ' ' 
             print("{} {} => {}".format(word, symbol, score))
-
-#TESTS - Currently broken - use old functional interface and predate the inclusion. 
-#Should be rewritten
-class TestWordScore(unittest.TestCase):
-    def setUp(self):
-        self.hist = build_hist(wordfile)
-
-    def testEmpty(self):
-        words = ["hello", "ghost", "trial"]
-        for word in words:
-            expected = sum([log2(self.hist[(i,c)]) for (i,c) in enumerate(word)])
-            self.assertEqual(word_score(word, self.hist), expected)
-
-    def testWithIncorrect(self):
-        words = ["hello", "ghost", "tribe"]
-        incorrect = set("lr")
-        scores = [0, word_score(words[1], self.hist), 0]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, incorrect = incorrect), scores[i])
-
-    def testWithUppercaseOnly(self):
-        words = ["hello", #Matches
-                "ghost",  #No match
-                "trial",  #Letter found, but different place
-                "boldl"   #Letter found and *also* in a wrong place
-                ]
-        mask = parse_mask("**L**")
-        scores = [word_score(words[0], self.hist),  0, 0, word_score(words[3], self.hist)]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, mask = mask), scores[i])
-
-    def testWith2UppercaseOnly(self):
-        words = ["hello", #Matches
-                "ghost",  #No match
-                "trial",  #Letter found, but different place
-                "boldl"   #Letter found and *also* in a wrong place
-                ]
-        mask = parse_mask("**L*O")
-        scores = [word_score(words[0], self.hist),  0, 0, 0]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, mask = mask), scores[i])
-
-    def testWithLowercaseOnly(self):
-        words = [
-                "trial",  #Letter found, in different place - matches
-                "ghost",  #Letter doesn't appear
-                "hello",  #Too close match - L in the right place 
-                "boldl"   #Letter found and *also* in a wrong place
-                ]
-        mask = parse_mask("**l**")
-        scores = [word_score(words[0], self.hist),  0, 0, 0]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, mask = mask), scores[i])
-
-    def testWithMultipleMismatches(self):
-        words = [
-                "trial",  #Letter found, in different place - matches
-                "ghost",  #Letter doesn't appear
-                "hello",  #Too close match - L in the right place 
-                "herlo",  #r instead of l, but pattern shouldn't match
-                "boldl"   #Letter found and *also* in a wrong place
-                ]
-        mask = parse_mask("**[lr]**")
-        scores = [word_score(words[0], self.hist),  0, 0, 0, 0]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, mask = mask), scores[i])
-
-    def testMixLowercaseUppercase(self):
-        words = [
-                "trial",  #matches
-                "ghost",  #no match
-                "heilo",  #l in the wrong place, i matches
-                "iobdl"   #i in wrong place
-                ]
-        mask = parse_mask("**Il*")
-        scores = [word_score(words[0], self.hist),  0, 0, 0]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, mask = mask), scores[i])
-
-    def testMixLowercaseUppercaseAndExclusions(self):
-        words = [
-                "trial",  #matches
-                "tribl",  #matches
-                "ghost",  #no match
-                "heilo",  #l in the wrong place, i matches
-                "iobdl"   #i in wrong place
-                ]
-        mask = parse_mask("**Il*")
-        incorrect = set("bqe")
-        scores = [word_score(words[0], self.hist),  0, 0, 0, 0]
-        for i, word in enumerate(words):
-            self.assertEqual(word_score(word, self.hist, mask = mask, incorrect = incorrect), scores[i])
-
 
 
