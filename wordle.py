@@ -356,8 +356,6 @@ class Game:
     def __init__(self, board, solver_fact):
         self.board = board
         self.solver = solver_fact()
-        print(self.solver)
-        print('-----')
 
     def use_word(self, word):
         score = self.board.score(word)
@@ -378,8 +376,9 @@ class Game:
             if next_word is None:
                 next_word = self.next_guess()
                 if first_word is None: first_word = next_word
+            remaining_solutions, _ = self.solver.entropy()
             score = self.use_word(next_word)
-            if disp: print ("{} => {} ".format(next_word, score))
+            if disp: print ("{} => {} (out of {})".format(next_word, score, remaining_solutions))
             if next_word == self.board.solution():
                 if disp:
                     print("'{}' found in {} steps starting from '{}'".format(self.board.solution(), i+1, first_word))
