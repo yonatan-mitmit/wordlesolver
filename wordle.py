@@ -342,8 +342,6 @@ class WordEntropy(BaseWordleSolver):
         probs = counts / total
         ent = 0
 
-        #ent = np.log2(probs) * probs
-        #return -np.sum(ent)
         return -np.dot(np.log2(probs), probs)
 
 class Board:
@@ -488,13 +486,13 @@ class GameRE:
         yield from self._fill_down(0, known, lm)
 
     def from_start(self, *words):
-        known = {x : words[x] for x in range(len(words))}
+        known = dict(enumerate(words))
         lm = LetterMatch(self.size)
         yield from self._fill_down(0, known, lm)
 
     def next_words(self, *words):
         valid_solutions = list(self.from_start(*words))
-        return set(x[len(words)] for x in valid_solutions)
+        return list(dict.fromkeys(x[len(words)] for x in valid_solutions))
 
     def last_words(self, *words):
         valid_solutions = list(self.from_start(*words))
