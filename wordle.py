@@ -4,6 +4,7 @@ Fix unittests to focus on parsers and not solver
 """
 
 import collections
+import copy
 from typing import Dict
 import unittest
 import argparse
@@ -30,6 +31,13 @@ class Color(enum.Enum):
     def __str__(self):
         return self.value
 
+    @staticmethod
+    def From(c : str):
+        if c == '⬜': 
+            return Color.GRAY
+        return Color(c)
+        
+
 class LetterMatch:
     # Green tells me exact location, and sets lower bound on count (number of yellow and green)
     # Yellow forbids exact location, and sets lower bound on count (number of yellow and green)
@@ -42,7 +50,7 @@ class LetterMatch:
         self.counts = {}
         self.size = size
 
-    def matches(self, word):
+    def matches(self, word : str) -> bool:
         for (i,l) in self.greens.items():
             if word[i] != l: return False
         for (i,ls) in self.forbidden.items():
@@ -56,7 +64,15 @@ class LetterMatch:
                 return False
         return True
 
-    def update(self, word, results):
+
+
+    def update(self, word : str, results : list[Color]):
+        retVal = copy.deepcopy(self) 
+        retVal.inplace_update(word, results)
+        return retVal
+
+
+    def inplace_update(self, word : str, results : list[Color]):
         ctr = collections.Counter(word)
         exacts = defaultdict(int)
         lb = set()
@@ -149,7 +165,7 @@ class BaseWordleSolver:
         self.remaining_candidates = self.all_candidates.copy()
 
     def update(self, word : str, results : list[Color]) -> None:
-        self.letter_match.update(word, results)
+        self.letter_match.inplace_update(word, results)
 
         self.remaining_solutions = BaseWordleSolver.filterList(self.all_solutions, self.letter_match)
 
@@ -407,6 +423,84 @@ def test(first_word, games = 100, solutions = None, candidates = None, hard_mode
     print("Ran {} rounds. Starting at {}. Average rounds was {} and failed {} times".format(games, first_word, sum(rets.values())/len(rets), len(failed)))
     return rets, failed
 
+class GameRE:
+    def __init__(self, candidates : list[str], solutions : list[str], board : str):
+        self.board = [ [Color.From(x) for x in result] for result in board.strip().splitlines()]
+        self.verifyBoard()
+        self.victory = all(x == Color.GREEN for x in self.board[-1])
+        self.rounds = len(self.board) 
+        self.candidates = candidates.copy()
+        self.solutions = solutions
+        self.sort_candidates()
+        self.size = len(self.board[0])
+        try:
+            from tqdm import tqdm
+            self.tqdm = tqdm
+        except:
+            print("no TQDM available. No progress bar will be used")
+            self.tqdm = lambda it, leave: it
+
+    def get_hist(self):
+        ctr = collections.Counter()
+        for word in self.candidates:
+            ctr.update(enumerate(word))
+        return ctr
+
+    def sort_candidates(self):
+        hist = self.get_hist()
+        key = lambda word: (np.sum([np.log(hist[i]) for i in enumerate(word) if hist[i] >0 ]), word) 
+        self.candidates.sort(key = key, reverse=True)
+    
+    def verifyBoard(self):
+        lens = [len(x) for x in self.board]
+        if min(lens) != max(lens):
+            raise ValueError("Boards isn't made from uniform length lines")
+        if len(self.board) < 1:
+            raise ValueError("Board is empty")
+
+    @staticmethod
+    def convertKnownToBoard(known : dict[int, str]) -> list[str]:
+        return [known[k] for k in sorted(known.keys())]
+
+    # Warning - Current implementation is not parallelizable as it shares the known dict....
+    def _fill_down(self, loc : int, known : dict[int, str], lm : LetterMatch):
+        if loc >=  self.rounds:
+            if self.victory and not known[self.rounds - 1] in self.solutions:
+                return
+            yield GameRE.convertKnownToBoard(known)
+            return 
+        if loc in known:
+            word = known[loc]
+            if not lm.matches(word): return
+            yield from self._fill_down(loc + 1, known, lm.update(word, self.board[loc]))
+        else: 
+            for word in self.tqdm(self.candidates, leave = False):
+                if lm.matches(word):
+                    # set up for recursion
+                    known[loc] = word
+                    yield from self._fill_down(loc + 1, known, lm.update(word, self.board[loc]))
+                    del known[loc]
+
+    # Initial version only supports filling down
+    def from_first_word(self, word):
+        known = {0 : word}
+        lm = LetterMatch(self.size) 
+        yield from self._fill_down(0, known, lm)
+
+    def from_start(self, *words):
+        known = {x : words[x] for x in range(len(words))}
+        lm = LetterMatch(self.size)
+        yield from self._fill_down(0, known, lm)
+
+    def next_words(self, *words):
+        valid_solutions = list(self.from_start(*words))
+        return set(x[len(words)] for x in valid_solutions)
+
+    def last_words(self, *words):
+        valid_solutions = list(self.from_start(*words))
+        c = collections.Counter(x[-1] for x in valid_solutions)
+        return c
+
 
 
 
@@ -479,7 +573,7 @@ if __name__ == "__main__":
     we = solver(*solver_args, **extraArgs)
     for mat in matches:
         we.update(*mat)
-    solver_fact = lambda lm, solver_class=WordEntropy, solutions=solutions, candidates=candidates : solver_class(solutions, candidates, True, lm)
+    #solver_fact = lambda lm, solver_class=WordEntropy, solutions=solutions, candidates=candidates : solver_class(solutions, candidates, True, lm)
     #we = solver(words, args.hard_mode, mask, set(args.incorrect), cache_policy = args.cache)
     if not args.dummy:
         res = we.best_matches(args.count, unique = args.unique)

@@ -1,0 +1,52 @@
+Board reversing
+
+Input - Matches colors, Partial assignment as constraints
+Naive approach - try all boards
+
+Constraint space - Hard mode (only valid guesses).
+Variant (allow lines with known mistakes) - later
+
+
+Ofer mode - seed word is known
+Take all possible remaining guesses (recursively) and try to add to board until we cannot contine
+
+
+Technical note - I need to make LM update return a new LM with update constraint while not touching the old one, so I can enjoy the stack here.
+
+
+Ravi mode - Last word is known, but nothing else.
+
+There's a "dual game" concept here, that is intriguing - given a last word and board, can I "flip" the game". 
+Not exactly, but going up each placement is a constraint on preceding words...
+
+Consider the following board Ofer board
+slate, crown, dormy, rigor, vigor
+
+Starting with Vigor, we know second word was ⬛🟩🟩🟩🟩 so that gives us that vigor to rigor is ⬛🟩🟩🟩🟩
+
+in Ravi Mode - the dual game means that letters that were green in some board and not green in preceeding board are now forbidden...
+This needs to "remember" from a letter match"
+
+I need a reverse LetterMatch to solve this
+Solution needs to be able to "demote" letters (green->yellow->gray) which is a whole new game
+
+
+
+
+
+Ofer Sort:
+Give each letter a score
+n>r>c - high
+o>u>i - mid
+b>d>g
+rest
+
+{
+    n : 5
+    r : 4.5
+    c : 3
+    o : 3
+    u : 2.5
+    i : 2
+    rest
+}
