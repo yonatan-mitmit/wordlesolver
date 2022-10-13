@@ -1,6 +1,5 @@
 """
-Fix unittests to focus on parsers and not solver
-
+My Wordle solvers and Reverese engineering toolkit
 """
 
 import collections
@@ -64,13 +63,10 @@ class LetterMatch:
                 return False
         return True
 
-
-
     def update(self, word : str, results : list[Color]):
         retVal = copy.deepcopy(self) 
         retVal.inplace_update(word, results)
         return retVal
-
 
     def inplace_update(self, word : str, results : list[Color]):
         ctr = collections.Counter(word)
@@ -142,7 +138,6 @@ wcVisitor = WordColorVisitor()
 def parse_word_color(wordcolor):
     tree = wcGrammer.parse(wordcolor)
     return wcVisitor.visit(tree)
-
 
 
 class BaseWordleSolver:
