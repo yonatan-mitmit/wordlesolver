@@ -451,43 +451,32 @@ class GameRE:
         if len(self.board) < 1:
             raise ValueError("Board is empty")
 
-    @staticmethod
-    def convertKnownToBoard(known : dict[int, str]) -> list[str]:
-        return [known[k] for k in sorted(known.keys())]
-
     # Warning - Current implementation is not parallelizable as it shares the known dict....
-    def _fill_down(self, loc : int, known : dict[int, str], lm : LetterMatch):
-        if loc >=  self.rounds:
+    def _fill_down(self, known : list[str], lm : LetterMatch):
+        if len(known) >=  self.rounds:
             if self.victory and not known[self.rounds - 1] in self.solutions:
                 return
-            yield GameRE.convertKnownToBoard(known)
+            yield known
             return 
-        if loc in known:
-            word = known[loc]
-            if not lm.matches(word): return
-            yield from self._fill_down(loc + 1, known, lm.update(word, self.board[loc]))
-        else: 
-            for word in self.tqdm(self.candidates, leave = False):
-                if lm.matches(word):
-                    # set up for recursion
-                    known[loc] = word
-                    yield from self._fill_down(loc + 1, known, lm.update(word, self.board[loc]))
-                    del known[loc]
+        loc = len(known)
+        for word in self.tqdm(self.candidates, leave = False):
+            if lm.matches(word):
+                yield from self._fill_down(known + [word], lm.update(word, self.board[loc]))
 
     # Initial version only supports filling down
     def from_first_word(self, word):
-        known = {0 : word}
-        lm = LetterMatch(self.size) 
-        yield from self._fill_down(0, known, lm)
+        yield from self.from_start(word)
 
     def from_start(self, *words):
-        known = dict(enumerate(words))
+        known = list(words) 
         lm = LetterMatch(self.size)
-        yield from self._fill_down(0, known, lm)
+        for c, word in enumerate(words):
+            lm.inplace_update(word, self.board[c])
+        yield from self._fill_down(known, lm)
 
     def next_words(self, *words):
         valid_solutions = list(self.from_start(*words))
-        return list(dict.fromkeys(x[len(words)] for x in valid_solutions))
+        return collections.Counter(x[len(words)] for x in valid_solutions)
 
     def last_words(self, *words):
         valid_solutions = list(self.from_start(*words))
@@ -577,3 +566,9 @@ if __name__ == "__main__":
             print("{} {} => {}".format(word, symbol, score))
 
 
+# Build entire raw of distance matrix
+# a = np.array(solutions, dtype='str')
+# b = a.view('U1').reshape(a.size, -1)
+# c = b[1773] # 'slate'
+# np.array([list(x) for x in ['slate','crate']])
+# r = np.maximum( np.in1d(b,c).reshape((a.size,-1)).astype(int), (b == c).astype(int)*2)
